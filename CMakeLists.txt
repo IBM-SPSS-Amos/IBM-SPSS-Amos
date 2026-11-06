@@ -1,0 +1,256 @@
+cmake_minimum_required(VERSION 3.21)
+
+# Because Qt implementation is a bit buggy,
+# when this is fixed, the setup will be even nicer.
+set(QT_CREATOR_SKIP_CONAN_SETUP ON)
+
+# ------ Build Toolchain
+
+if (UNIX)
+  #Please just give me errors when there is no proper return defined in non-void functions:
+  add_compile_options(-Werror=return-type)
+endif()
+
+if(WIN32)
+  add_compile_options(/utf-8)  #Make sure to compile in utf-8 on the locale code page.
+  add_compile_options(/std:c++20)
+endif()
+
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+if(APPLE)
+
+  execute_process(COMMAND uname -m OUTPUT_VARIABLE HOST_PROCESSOR OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+  message(STATUS "Host processor is ${HOST_PROCESSOR}")
+
+  if("${CMAKE_OSX_ARCHITECTURES}" STREQUAL "")
+    set(CMAKE_OSX_ARCHITECTURES ${HOST_PROCESSOR})
+    set(CROSS_COMPILING 0)
+    message(STATUS "Building for ${CMAKE_OSX_ARCHITECTURES} architecture")
+  else()
+    if(NOT ("${CMAKE_OSX_ARCHITECTURES}" STREQUAL "${HOST_PROCESSOR}"))
+      set(CROSS_COMPILING 1)
+      message(STATUS "Cross compiling for ${CMAKE_OSX_ARCHITECTURES} architecture")
+    endif()
+  endif()
+
+  if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0 CACHE STRING "Minimum macOS version the build will be able to run on" FORCE)
+    set(CONAN_ARCH "armv8")
+  else()
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0 CACHE STRING "Minimum macOS version the build will be able to run on" FORCE)
+    set(CONAN_ARCH "x86_64")
+  endif()
+
+
+  if("${CMAKE_OSX_SYSROOT}" STREQUAL "macosx" OR "${CMAKE_OSX_SYSROOT}" STREQUAL "")
+    execute_process(COMMAND xcrun --sdk macosx --show-sdk-path
+  OUTPUT_VARIABLE SDKROOT
+  OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set(CMAKE_OSX_SYSROOT ${SDKROOT})
+    message(STATUS "Got CMAKE_OSX_SYSROOT from xcrun as '${SDKROOT}'")
+  else()
+    message(STATUS "CMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}")
+  endif()
+
+
+endif()
+
+project(
+  JASP
+  VERSION 1.0.0.0 # <major>[.<minor>[.<patch>[.<tweak>]]]
+  LANGUAGES CXX C
+  HOMEPAGE_URL "http://jasp-stats.org/"
+  DESCRIPTION "A fresh way to do statistics")
+
+#needed for R-Interface and QMLComponents for them to build stuff properly when *inside* JASP
+add_definitions(-DBUILDING_JASP)
+set(BUILDING_JASP     TRUE)
+set(PRO               FALSE       CACHE BOOL   "Are we building the pro-version?")
+
+if(PRO)
+  add_definitions(-DPRO)
+endif()
+
+set(CMAKE_MESSAGE_CONTEXT_SHOW ON)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(CMAKE_FIND_FRAMEWORK ON)
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
+
+set(INTERACTIVE_PLOTS ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE
+      "Debug"
+      CACHE STRING
+            "OBS build type [Release, RelWithDebInfo, Debug, MinSizeRel]" FORCE)
+  message(STATUS "Building for ${CMAKE_BUILD_TYPE}")
+endif()
+
+# ------ CMake Modules
+
+include(FetchContent)
+include(ExternalProject)
+include(CMakePrintHelpers)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/Tools/CMake")
+
+# ------ Options
+
+include(Config)
+
+# ------ Conan Dependency Manager
+
+include(Conan)
+# Conan set the CMAKE_MSVC_RUNTIME_LIBRARY to MultiThreadedDLL (this adds the /MD flag, cf conan_toolchain.cmake)
+# But on debug mode it does not set it to the MultiThreadedDebugDLL (/MDd): this can lead to a crash if a library uses a Qt function in a static method, as in DynamicRuntimeInfo)
+# We unconditionally force MultiThreaded$<$<CONFIG:Debug>:Debug>DLL so that:
+#   - Debug gets /MDd (MultiThreadedDebugDLL)
+#   - All other configs (Release, RelWithDebInfo, MinSizeRel) get /MD (MultiThreadedDLL)
+# This must be set after include(Conan) to override any Conan toolchain settings.
+if(WIN32)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+  message(STATUS "CMAKE_MSVC_RUNTIME_LIBRARY is set to ${CMAKE_MSVC_RUNTIME_LIBRARY}")
+endif()
+
+
+# ------ JASP Config
+
+# Looking for programs, e.g., git, bison, flex
+include(Programs)
+
+# Looking for libraries, e.g., Boost, Qt
+include(Libraries)
+
+# Preparing irregular dependencies, e.g., ReadStat
+include(Dependencies)
+
+# Setting JASP's parameters, e.g., JASP_VERSION
+include(JASP)
+
+# Preparing R environment, and setting R_HOME_PATH
+include(R)
+
+# These tell Qt to do its things
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+
+# Later, I would try tor remove this, for now, it's necessary because Conan
+# tends to mess up the directory structure
+if(WIN32)
+  include(InstallRequiredSystemLibraries)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO
+      ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL
+      ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+
+  message(CHECK_START "Setting path to libR-Interface.dll")
+  set(_LIB_R_INTERFACE_DLL
+   "${CMAKE_BINARY_DIR}/R-Interface/libR-Interface.dll"
+   CACHE STRING "Path to libR-Interface.dll")
+  set(_LIB_R_INTERFACE_NORINSIDE_DLL
+          "${CMAKE_BINARY_DIR}/R-Interface/libR-InterfaceNoRInside.dll"
+          CACHE STRING "Path to libR-InterfaceNoRInside.dll" FORCE)
+  message(STATUS "  ${_LIB_R_INTERFACE_DLL}")
+  message(STATUS "  ${_LIB_R_INTERFACE_NORINSIDE_DLL}")
+
+  message(CHECK_START "Setting path to libR-Interface.dll.a")
+  set(_LIB_R_INTERFACE_STATIC_DLL_A
+   "${CMAKE_BINARY_DIR}/R-Interface/libR-Interface.dll.a"
+   CACHE STRING "Path to libR-Interface.dll.a")
+  set(_LIB_R_INTERFACE_NORINSIDE_STATIC_DLL_A
+          "${CMAKE_BINARY_DIR}/R-Interface/libR-InterfaceNoRInside.dll.a"
+          CACHE STRING "Path to libR-InterfaceNoRInside.dll.a" FORCE)
+  message(STATUS "  ${_LIB_R_INTERFACE_STATIC_DLL_A}")
+  message(STATUS "  ${_LIB_R_INTERFACE_NORINSIDE_STATIC_DLL_A}")
+
+  message(STATUS "libR-Interface will be build if it is missing.")
+
+
+endif()
+
+add_subdirectory(Common)
+add_subdirectory(CommonData)
+add_subdirectory(QMLComponents)
+add_subdirectory(SyntaxInterface)
+
+if(NOT WIN32)
+  add_subdirectory(R-Interface)
+else()
+  # Building R-Interface with MinGW configuration, see R-Interface/CMakeLists.txt
+  # for more info. Note that the build path is set to be inside the JASP's build
+  # folder, e.g. jasp-desktop-build-dir/R-Interface
+  add_custom_target(
+    R-Interface
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/R-Interface
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/R-Interface/libR-Interface.dll
+               ${CMAKE_BINARY_DIR}/R-Interface/libR-Interface.dll.a
+               ${CMAKE_BINARY_DIR}/R-Interface/libR-InterfaceNoRInside.dll
+               ${CMAKE_BINARY_DIR}/R-Interface/libR-InterfaceNoRInside.dll.a
+        COMMAND
+      ${CMAKE_COMMAND} -E env
+      "PATH=${RTOOLS_STATIC_TOOLCHAIN_BIN};${RTOOLS_BUILD_TOOLS_BIN};$ENV{PATH}"
+      ${CMAKE_COMMAND} -G "${RTOOLS_R_INTERFACE_GENERATOR}" -S . -B
+      ${CMAKE_BINARY_DIR}/R-Interface
+      "-DCMAKE_C_COMPILER:PATH=${RTOOLS_C_COMPILER}"
+      "-DCMAKE_CXX_COMPILER:PATH=${RTOOLS_CXX_COMPILER}"
+      "-DCMAKE_MAKE_PROGRAM:PATH=${RTOOLS_MAKE_PROGRAM}"
+      "-DJASP_BINARY_DIR:PATH=${CMAKE_BINARY_DIR}"
+      "-DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}"
+      "-DR_VERSION:STRING=${R_VERSION}"
+    COMMAND
+      ${CMAKE_COMMAND} -E env
+      "PATH=${RTOOLS_STATIC_TOOLCHAIN_BIN};${RTOOLS_BUILD_TOOLS_BIN};$ENV{PATH}"
+      ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/R-Interface
+    VERBATIM
+    COMMENT "------ Configuring and Building the libR-Interface")
+
+  add_dependencies(SyntaxInterface R-Interface)
+
+endif()
+
+if(NOT USE_QT_STATIC_LIBS AND NOT JASP_SYNTAX_INTERFACE_ONLY)
+  add_subdirectory(Engine)
+  add_subdirectory(Desktop)
+endif()
+
+if(BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(Tests)
+endif()
+
+# Builds, installs and configures JASP Modules
+include(Modules)
+
+# Install logic, usually staging a deploy-able JASP in Build/Install/ folder
+if(NOT USE_QT_STATIC_LIBS AND NOT JASP_SYNTAX_INTERFACE_ONLY)
+  include(Install)
+endif()
+
+# Packs and creates installer executable for Windows, and macOS
+if(NOT LINUX AND NOT JASP_SYNTAX_INTERFACE_ONLY)
+  if("${NIGHTLY_BUILD}" STREQUAL "ON")
+    SET(MACOS_JENKINS_SKIPPER "--skip-jenkins")
+  else()
+    SET(MACOS_JENKINS_SKIPPER "")
+  endif()
+  include(Pack)
+endif()
+
+if(NOT
+   CMAKE_GENERATOR
+   STREQUAL
+   "Ninja")
+  message(
+    WARNING
+      "JASP is optimised to be built using the Ninja build system. You have chosen ${CMAKE_GENERATOR}, and this might cause issue during the build."
+  )
+endif()

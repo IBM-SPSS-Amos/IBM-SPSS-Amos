@@ -1,0 +1,146 @@
+//
+// Copyright (C) 2013-2018 University of Amsterdam
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 2 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+//
+
+#ifndef ENGINE_H
+#define ENGINE_H
+
+#include "databridge.h"
+#include "enginedefinitions.h"
+#include "ipcchannel.h"
+#include <json/json.h>
+#include "columnencoder.h"
+
+/// The Engine handles communication between Desktop and R
+/// It can be in a variety of states _currentEngineState and can run analyses, filters, compute columns and Rcode.
+/// It also contains some utility functions for use by rbridge and by extension R
+class Engine : public DataBridge
+{
+public:
+	typedef engineAnalysisStatus Status;
+	
+	explicit				Engine(int slaveNo, unsigned long parentPID);
+							~Engine();
+	static Engine		*	theEngine() { return _EngineInstance; } //There is only ever one engine in a process so we might as well have a static pointer to it.
+
+	void					run();
+	bool					receiveMessages(int timeout = 0);
+	void					setSlaveNo(int no);
+	int						engineNum() const { return _engineNum; }
+	void					sendString(Json::Value message);
+
+	bool					parentAlive();
+
+	Status					getAnalysisStatus() { return _analysisStatus; }
+	analysisResultStatus	getStatusToAnalysisStatus();
+
+	//the following functions in public can all be called (indirectly) from R and/or rbridge:
+	bool					paused()				{ return _engineState == engineState::paused; }
+
+private:
+	void					initialize();
+	void					beIdle(bool newlyIdle);
+
+	void					receiveRCodeMessage(			const Json::Value & jsonRequest);
+	void					receiveFilterMessage(			const Json::Value & jsonRequest);
+	void 					receiveFilterByNameMessage(		const Json::Value & jsonRequest);
+	void					receiveAnalysisMessage(			const Json::Value & jsonRequest);
+	void					receiveComputeColumnMessage(	const Json::Value & jsonRequest);
+	void					receiveComputeDataSetMessage(	const Json::Value & jsonRequest);
+	void					receiveModuleRequestMessage(	const Json::Value & jsonRequest);
+	void					receiveLogCfg(					const Json::Value & jsonRequest);
+	void					receiveSettings(				const Json::Value & jsonRequest);
+	void					absorbSettings(					const Json::Value & json);
+
+	void					runAnalysis();
+	void					runComputeColumn(	int dataSet,	const std::string & computeColumnName,	const std::string & computeColumnCode,	columnType computeColumnType,	const std::vector<int> & referencedFilterIds	);
+	void					runComputeDataSet(	int dataSet,	const std::string & computeCode,		int defaultInputFilterId,		const std::vector<int> & referencedFilterIds	);
+	void					runDefaultFilter(	int dataSet,	const std::string & filter,				const std::string & generatedFilter,	int filterRequestId,	const std::vector<int> & referencedFilterIds	);
+	void 					runFilterByName(	const std::string & name, int dataSet, int requestId = -1, const std::vector<int> & referencedFilterIds = {});
+	void					runRCode(			int dataSet,	const std::string & rCode,				int rCodeRequestId,						bool whiteListed				);
+	void					runRCodeCommander(	int dataSet,	std::string   rCode,				bool columnsByName														);
+
+	///< extract the transient `referencedFilterIds` sidecar of a filter/
+	///< compute request - the desktop's scan of the run's code (the grammar helpers). Consumed
+	///< HERE and only for slice materialization: it is never forwarded into anything R
+	///< evaluates (the R-visible code is built by rbridge_prepareSliceRunScript from the code
+	///< text alone), so the sidecar dies with the request json - the strip point for these
+	///< requests, mirroring the last-moment doctrine.
+	static	std::vector<int>	referencedFilterIdsFromRequest(const Json::Value & jsonRequest);
+
+	void					stopEngine();
+	void					pauseEngine(	const Json::Value & jsonRequest);
+	void					resumeEngine(	const Json::Value & jsonRequest); 
+	void					sendEnginePaused();
+	void					sendEngineResumed(bool justReloadedData = false);
+	void					sendEngineLoadingData();
+	void					sendLoadingDataProgress(float progress);
+	void					sendEngineStopped();
+
+	void					saveImage();
+	void					editImage();
+	void					rewriteImages();
+	void					removeNonKeepFiles(const Json::Value & filesToKeepValue);
+
+	void					sendAnalysisResults();
+	void					sendAbortAck();
+	void					sendFilterByNameDone(	const std::string & name, int dataSetId, const std::string & errorMessage, int requestId = -1);
+	void					sendFilterResult(		int filterRequestId);
+	void					sendFilterError(		int filterRequestId,	const std::string & errorMessage);
+	void					sendRCodeResult(		int rCodeRequestId,		const std::string & rCodeResult);
+	void					sendRCodeError(			int rCodeRequestId);
+
+private: // Data:
+	static Engine				*	_EngineInstance;
+	const int						_engineNum;
+	const unsigned long				_parentPID;
+	IPCChannel					*	_channel				= nullptr;
+	engineState						_engineState			= engineState::initializing,
+									_lastRequest			= engineState::initializing;
+	Status							_analysisStatus			= Status::empty;
+	int								_analysisRevision,
+									_analysisDataSetId		= -1,
+									_progress,
+									_ppi					= 96,
+									_numDecimals			= 3;
+	bool							_developerMode			= false,
+									_fixedDecimals			= false,
+									_exactPValues			= false,
+									_normalizedNotation		= true,
+									_useThousandSeps		= false,
+									_analysisPreloadData,
+									_analysisMultiDataSet	= false;	///< The analysis may run on multiple datasets; per-option .meta says which (see runAnalysis)
+	std::string						_analysisName,
+									_analysisTitle,
+									_analysisFilter,
+									_analysisDataKey,
+									_analysisResultsMeta,
+									_analysisStateKey,
+									_analysisResultsString,
+									_resultFont,
+									_imageBackground		= "white",
+									_analysisRFile			= "",
+									_dynamicModuleCall		= "",
+									_langR					= "en",
+									_qLocaleName			= "C";
+	Json::Value						_imageOptions,
+									_analysisOptions		= Json::nullValue,
+									_analysisResults;
+	ColumnEncoder::colsPlusTypes	_analysisColsTypes;
+
+};
+
+#endif // ENGINE_H

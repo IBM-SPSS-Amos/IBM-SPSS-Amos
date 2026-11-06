@@ -1,0 +1,172 @@
+//
+// Copyright (C) 2013-2026 University of Amsterdam
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 2 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+//
+
+#ifndef JASPRCPP_INTERFACE_H
+#define JASPRCPP_INTERFACE_H
+
+/// This file contains all the functions that need to be accessible in Engine
+/// So make sure to only use C types.
+
+//unix uses same compiler for both R-Interface and Engine so no need for dll-hoops to jump through
+#ifdef _WIN32
+#if defined(JASP_R_INTERFACE_LIBRARY)
+#  define RBRIDGE_TO_JASP_INTERFACE __declspec(dllexport)
+#else
+#  define RBRIDGE_TO_JASP_INTERFACE __declspec(dllimport)
+#endif
+#else
+#define RBRIDGE_TO_JASP_INTERFACE
+#endif
+
+#ifdef _WIN32
+#define STDCALL __stdcall
+#else
+#define STDCALL
+#endif
+
+#include <stdio.h>
+
+extern "C" {
+
+struct RBridgeColumn {
+  char*		name;
+  bool		isScale;
+  bool		isOrdinal;
+  bool		dropLevels;
+  double*	doubles;
+  int*		ints;
+  char**	labels;
+  size_t	nbRows;
+  size_t	nbLabels;
+} ;
+
+struct RBridgeColumnDescription {
+  int     type;
+  char*   name;
+  bool    isScale;
+  bool    isOrdinal;
+  char**  labels;
+  size_t  nbLabels;
+} ;
+
+struct RBridgeColumnType {
+	char*	name;
+	int		type;
+};
+
+// Callbacks from jaspRCPP to rbridge
+typedef RBridgeColumn*				(STDCALL *ReadDataSetCB)                (RBridgeColumnType* columns, size_t colMax, bool obeyFilter);
+typedef RBridgeColumn*				(STDCALL *ReadADataSetCB)               (size_t * colMax);
+typedef RBridgeColumn*				(STDCALL *ReadADataSetFilterCB)         (size_t * colMax, bool obeyFilter);
+typedef char**						(STDCALL *ReadDataColumnNamesCB)        (size_t * maxCol);
+typedef RBridgeColumnDescription*	(STDCALL *ReadDataSetDescriptionCB)     (RBridgeColumnType* columns, size_t colMax);
+typedef bool						(STDCALL *RequestPredefinedFileSourceCB)(const char **root, const char **relativePath);
+typedef bool						(STDCALL *RequestTempFileNameCB)        (const char* extensionAsString, const char **root, const char **relativePath);
+typedef const char*					(STDCALL *RequestTempRootNameCB)        ();
+typedef bool						(STDCALL *RunCallbackCB)                (const char* in, int progress, const char** out);
+typedef int							(STDCALL *GetColumnType)				(const char* columnName);
+typedef int							(STDCALL *GetColumnAnalysisId)			(const char* columnName);
+typedef const char *				(STDCALL *CreateColumn)					(const char* columnName, bool computed);
+typedef bool						(STDCALL *DeleteColumn)					(const char* columnName);
+typedef bool						(STDCALL *SetColumnDataAndType)			(const char* columnName, const char **	nominalData,	size_t length, int columnTYpe, bool computed);
+typedef bool						(STDCALL *SetDataSet)					(const char* datasetName, const char ** columnNames, const int * columnTypes, const char *** columnData, const size_t * columnLengths, size_t colCount);
+typedef int							(STDCALL *DataSetRowCount)              ();
+typedef const char *				(STDCALL *EnDecodeDef)					(const char *);
+typedef int							(STDCALL *DecodeTypeDef)				(const char *);
+typedef bool						(STDCALL *ShouldEnDecodeDef)			(const char *);
+typedef const char *				(STDCALL *systemDef)					(const char *);
+typedef void						(STDCALL *libraryFixerDef)				(const char *);
+typedef const char **				(STDCALL *getColNames)					(size_t &  names, bool encoded);
+typedef const char*					(STDCALL *RequestStringRBridge)        ();
+
+//This is a C ABI struct shared between JASPEngine and the R-Interface DLL. Its member ORDER IS
+//LOAD-BEARING: both sides read the callbacks by offset (offsetof), so inserting a field anywhere
+//except at the END silently corrupts every following pointer when an older/mismatched half is loaded.
+//ALWAYS append new callbacks at the END of the struct.
+struct RBridgeCallBacks {
+	ReadDataSetCB					readDataSetCB;
+	ReadADataSetFilterCB			readDataSetRequestedCB;
+	ReadDataColumnNamesCB			readDataColumnNamesCB;
+	ReadDataSetDescriptionCB		readDataSetDescriptionCB;
+	RequestPredefinedFileSourceCB	requestStateFileSourceCB;
+	RequestTempFileNameCB			requestTempFileNameCB,
+									requestSpecificFileNameCB;
+	RequestTempRootNameCB			requestTempRootNameCB;
+	RunCallbackCB					runCallbackCB;
+	ReadADataSetCB					readFullDataSetCB,
+									readFullFilteredDataSetCB,
+									readFilterDataSetCB,
+									readCompColDataSetCB;
+	RequestPredefinedFileSourceCB	requestJaspResultsFileSourceCB;
+	GetColumnType					dataSetGetColumnType;
+	CreateColumn					dataSetCreateColumn;
+	DeleteColumn					dataSetDeleteColumn;
+	GetColumnAnalysisId				dataSetGetColumnAnalysisId,
+									dataSetGetColumnOriginalIndex;
+	SetColumnDataAndType			dataSetColumnAsDataAndType;
+	DataSetRowCount					dataSetRowCount;
+	EnDecodeDef						encoder,
+									decoder,
+									encoderAll,
+									decoderAll;
+	DecodeTypeDef					decodeType;
+	ShouldEnDecodeDef				shouldEncode,
+									shouldDecode;
+	getColNames						columnNames;
+	RequestStringRBridge			computedColumnFilter;
+	//New callbacks MUST be appended here (at the END): this struct is shared across the engine and
+	//the R-Interface DLL and read by offset, so inserting anywhere else breaks mismatched halves.
+	SetDataSet						dataSetSetDataSet;
+	EnDecodeDef						suggestColumnNames;	///< "did you mean" columnNames, joined by '\x1f'
+};
+
+typedef void			(*sendFuncDef)			(const char *);
+typedef bool			(*pollMessagesFuncDef)	();
+typedef int				(*logFlushDef)			();
+typedef size_t			(*logWriteDef)			(const void * buf, size_t len);
+
+
+// Calls from rbridge to jaspRCPP
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_init(const char* buildYear, const char* version, RBridgeCallBacks *calbacks, sendFuncDef sendToDesktopFunction, pollMessagesFuncDef pollMessagesFunction, logFlushDef logFlushFunction, logWriteDef logWriteFunction, systemDef systemFunc, libraryFixerDef libraryFixerFunc, const char* resultFont, const char * tempDir, const char * friendlyRFunctionsInit, bool insideJasp = true);
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_init_jaspBase();
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_setDecimalSettings(int numDecimals, bool fixedDecimals, bool normalizedNotation, bool exactPValues);
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_setFontAndPlotSettings(const char * resultFont, const int ppi, const char* imageBackground);
+RBRIDGE_TO_JASP_INTERFACE const char*	STDCALL jaspRCPP_runModuleCall(const char* name, const char* title, const char* moduleCall, const char* dataKey, const char* options, const char* stateKey, int analysisID, int analysisRevision, bool developerMode, bool preloadData, const char* multiDataSetJson);
+
+RBRIDGE_TO_JASP_INTERFACE const char*	STDCALL jaspRCPP_saveImage(const char *data, const char *type, const int height, const int width);
+RBRIDGE_TO_JASP_INTERFACE const char*	STDCALL jaspRCPP_editImage(const char *name, const char *optionsJson, int analysisID);
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_rewriteImages(const char * name, int analysisID);
+
+RBRIDGE_TO_JASP_INTERFACE const char*	STDCALL jaspRCPP_evalRCode(			const char *rCode, bool setWd);
+RBRIDGE_TO_JASP_INTERFACE const char*	STDCALL jaspRCPP_evalRCodeCommander(const char *rCode);
+RBRIDGE_TO_JASP_INTERFACE const char*	STDCALL jaspRCPP_evalComputedColumn(const char *rCode, const char * setColumnCode);
+RBRIDGE_TO_JASP_INTERFACE const char*	STDCALL jaspRCPP_evalComputedDataSet(const char *rCode, const char * setDataSetCode);
+
+RBRIDGE_TO_JASP_INTERFACE int			STDCALL jaspRCPP_runFilter(const char * filtercode, bool ** arraypointer); //arraypointer points to a pointer that will contain the resulting list of filter-booleans if jaspRCPP_runFilter returns > 0
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_freeArrayPointer(bool ** arrayPointer);
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_runScript(const char * scriptCode);
+RBRIDGE_TO_JASP_INTERFACE const char *	STDCALL jaspRCPP_runScriptReturnString(const char * scriptCode);
+
+RBRIDGE_TO_JASP_INTERFACE const char*	STDCALL jaspRCPP_getLastErrorMsg();
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_resetErrorMsg();
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_setErrorMsg(const char* msg);
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_purgeGlobalEnvironment();
+RBRIDGE_TO_JASP_INTERFACE void			STDCALL jaspRCPP_setShouldDropLevels(bool dropPlease);
+
+} // extern "C"
+
+#endif // JASPRCPP_INTERFACE_H
